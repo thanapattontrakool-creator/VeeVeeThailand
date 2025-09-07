@@ -1302,4 +1302,192 @@
                             file_name: this.slipFile.name,
                             file_type: this.slipFile.type,
                             file_size: this.slipFile.size,
-                            file_data: base
+                                                    file_data: base64, // <— ใส่ข้อมูลรูปเป็น Base64
+                        action: 'upload_slip'
+                        };
+
+                        // ส่งไป Google Apps Script
+                        const res = await fetch(this.APPS_SCRIPT_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(slipData),
+                            mode: 'cors'
+                        });
+
+                        // บางครั้ง Apps Script ตั้งค่า CORS ทำให้อ่าน JSON ไม่ได้ ให้ลองจับ text ไว้ด้วย
+                        let result;
+                        try {
+                            result = await res.json();
+                        } catch {
+                            result = { ok: res.ok, status: res.status };
+                        }
+
+                        this.slipUploading = false;
+
+                        // แสดงผลลัพธ์
+                        this.successMessage = 'เราได้รับสลิปการโอนเงินเรียบร้อยแล้ว ขอบคุณครับ';
+                        this.showQRModal = false;
+                        this.showSuccessModal = true;
+                        this.slipFile = null;
+                        this.slipPreview = null;
+                    } catch (err) {
+                        console.error('ส่งสลิปล้มเหลว:', err);
+                        this.slipUploading = false;
+                        alert('อัปโหลดสลิปไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+                    }
+                },
+
+                // แปลงไฟล์เป็น Base64 (ตัด prefix data:...;base64, ออกให้เหลือเฉพาะข้อมูล)
+                fileToBase64(file) {
+                    return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                            const base64 = String(reader.result).split(',')[1];
+                            resolve(base64);
+                        };
+                        reader.onerror = reject;
+                        reader.readAsDataURL(file);
+                    });
+                },
+
+                // ส่งคำสั่งซื้อ
+                async submitOrder() {
+                    if (!this.orderForm.name || !this.orderForm.phone || !this.orderForm.address) {
+                        alert('กรุณากรอกข้อมูลให้ครบถ้วน');
+                        return;
+                    }
+
+                    try {
+                        this.orderSubmitting = true;
+
+                        // สร้างเลขคำสั่งซื้อ (กันกรณีฝั่ง Apps Script ไม่คืนหมายเลข)
+                        if (!this.orderNumber) {
+                            this.orderNumber = this.generateOrderNumber();
+                        }
+
+                        const payload = {
+                            action: 'order',
+                            order_number: this.orderNumber,
+                            name: this.orderForm.name,
+                            phone: this.orderForm.phone,
+                            email: this.orderForm.email,
+                            address: this.orderForm.address,
+                            note: this.orderForm.note,
+                            payment_method: this.orderForm.paymentMethod,
+                            quantity: this.orderForm.quantity,
+                            subtotal: this.orderForm.quantity * 119,
+                            shipping: 50,
+                            cod_fee: this.orderForm.paymentMethod === 'cod'
+                                ? Math.round((this.orderForm.quantity * 119) * 0.03)
+                                : 0,
+                            total: this.getTotalPrice()
+                        };
+
+                        // ส่งไป Google Apps Script
+                        await fetch(this.APPS_SCRIPT_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload),
+                            mode: 'cors'
+                        }).catch(e => console.warn('ส่งออเดอร์แล้ว แต่อ่านผลลัพธ์ไม่ได้ (CORS):', e));
+
+                        this.orderSubmitting = false;
+
+                        // เปิด flow ตามวิธีชำระเงิน
+                        if (this.orderForm.paymentMethod === 'cod') {
+                            this.successMessage = 'รับคำสั่งซื้อแบบเก็บเงินปลายทางแล้ว เราจะติดต่อกลับเพื่อยืนยันภายใน 24 ชม.';
+                            this.showOrderModal = false;
+                            this.showSuccessModal = true;
+                            document.body.style.overflow = 'auto';
+                        } else {
+                            // QR / โอนธนาคาร → เปิดหน้าชำระเงิน
+                            this.qrAmount = this.getTotalPrice();
+                            this.qrCodeUrl = this.generatePromptPayQR(this.qrAmount);
+                            this.showOrderModal = false;
+                            this.showQRModal = true;
+                            document.body.style.overflow = 'hidden';
+                        }
+                    } catch (err) {
+                        console.error('ส่งคำสั่งซื้อล้มเหลว:', err);
+                        this.orderSubmitting = false;
+                        alert('ไม่สามารถส่งคำสั่งซื้อได้ กรุณาลองใหม่อีกครั้ง');
+                    }
+                },
+
+                // ส่งแบบฟอร์มติดต่อ
+                async submitContactForm() {
+                    if (!this.contactForm.name || !this.contactForm.email || !this.contactForm.phone || !this.contactForm.message) {
+                        alert('กรุณากรอกข้อมูลให้ครบถ้วน');
+                        return;
+                    }
+
+                    try {
+                        this.contactSubmitting = true;
+
+                        const payload = {
+                            action: 'contact',
+                            name: this.contactForm.name,
+                            email: this.contactForm.email,
+                            phone: this.contactForm.phone,
+                            message: this.contactForm.message,
+                            utc: new Date().toISOString()
+                        };
+
+                        await fetch(this.APPS_SCRIPT_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload),
+                            mode: 'cors'
+                        }).catch(e => console.warn('ส่งข้อความแล้ว แต่อ่านผลลัพธ์ไม่ได้ (CORS):', e));
+
+                        this.contactSubmitting = false;
+
+                        this.successMessage = 'ส่งข้อความเรียบร้อย ขอบคุณที่ติดต่อเรา ทีมงานจะตอบกลับโดยเร็วที่สุด';
+                        this.showSuccessModal = true;
+
+                        // รีเซ็ตฟอร์ม
+                        this.contactForm = { name: '', email: '', phone: '', message: '' };
+                    } catch (err) {
+                        console.error('ส่งข้อความล้มเหลว:', err);
+                        this.contactSubmitting = false;
+                        alert('ส่งข้อความไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+                    }
+                },
+
+                // Smooth scroll สำหรับลิงก์เมนู
+                setupSmoothScroll() {
+                    document.querySelectorAll('a[href^="#"]').forEach(a => {
+                        a.addEventListener('click', (e) => {
+                            const href = a.getAttribute('href');
+                            if (!href || href === '#') return;
+
+                            const el = document.querySelector(href);
+                            if (!el) return;
+
+                            e.preventDefault();
+
+                            // ชดเชยความสูงของ navbar fixed
+                            const nav = document.querySelector('nav');
+                            const offset = nav ? nav.offsetHeight + 12 : 0;
+                            const top = el.getBoundingClientRect().top + window.scrollY - offset;
+
+                            window.scrollTo({ top, behavior: 'smooth' });
+                        });
+                    });
+                },
+
+                // สร้างเลขคำสั่งซื้อแบบสั้นอ่านง่าย
+                generateOrderNumber() {
+                    const d = new Date();
+                    const y = String(d.getFullYear()).slice(-2);
+                    const m = String(d.getMonth() + 1).padStart(2, '0');
+                    const day = String(d.getDate()).padStart(2, '0');
+                    const h = String(d.getHours()).padStart(2, '0');
+                    const min = String(d.getMinutes()).padStart(2, '0');
+                    const s = String(d.getSeconds()).padStart(2, '0');
+                    const rnd = Math.floor(Math.random() * 900 + 100); // 3 หลัก
+                    return `VV-${y}${m}${day}${h}${min}${s}-${rnd}`;
+                }
+            }
+        }
+    </script>
